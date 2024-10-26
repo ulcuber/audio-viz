@@ -34,7 +34,7 @@ jobs:
       - name: Detect package manager
         id: detect-package-manager
         env:
-          ASSET_URL: ${{ steps.deployment.outputs.page_url }}
+          ASSET_URL: ${{ vars.ASSET_URL }}
         run: |
           if [ -f "${{ github.workspace }}/yarn.lock" ]; then
             echo "manager=yarn" >> $GITHUB_OUTPUT
