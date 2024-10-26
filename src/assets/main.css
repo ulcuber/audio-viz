@@ -1,0 +1,21 @@
+html {
+  box-sizing: border-box;
+  height: 100%;
+  line-height: 1.5;
+  text-size-adjust: 100%;
+  -ms-overflow-style: scrollbar;
+}
+
+*,
+::after,
+::before {
+  box-sizing: inherit;
+  border: 0;
+}
+
+body {
+  position: relative;
+  height: 100%;
+  margin: 0;
+  font-family: Neucha, sans-serif;
+}
