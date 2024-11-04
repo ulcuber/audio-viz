@@ -2,34 +2,12 @@
 import {
   onMounted, onBeforeUnmount, ref, watch, reactive, computed,
 } from 'vue';
-
 import { useResizeObserver } from '@vueuse/core';
-
-const fftSizes = [32768, 16384, 8192, 2048, 1024, 512, 256, 128];
-const enNoteStringsSharp = [
-  'C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'A♯', 'B',
-];
-const romanNoteStringsSharp = [
-  'До', 'До♯', 'Ре', 'Ре♯', 'Ми', 'Фа', 'Фа♯', 'Соль', 'Соль♯', 'Ля', 'Ля♯', 'Си',
-];
-const romanOcaves = [
-  'Субсубконтроктава', 'Субконтроктава', 'Контроктава',
-  'Большая октава', 'Малая октава',
-  'Первая октава', 'Вторая октава', 'Третья октава', 'Четвёртая октава', 'Пятая октава',
-];
-
-function noteFromPitch(frequency) {
-  const noteNum = 12 * (Math.log(frequency / 440) / Math.log(2));
-  return Math.round(noteNum) + 69;
-}
-
-function frequencyFromNoteNumber(note) {
-  return 440 * 2 ** ((note - 69) / 12);
-}
-
-function centsOffFromPitch(frequency, note) {
-  return Math.floor(1200 * Math.log(frequency / frequencyFromNoteNumber(note)) / Math.log(2));
-}
+import {
+  romanOctaves, romanNoteStringsSharp, enNoteStringsSharp, fftSizes,
+} from '../dict';
+import { semitoneFromPitch, centsOffFromPitch } from '../util';
+import RomanNote from './RomanNote.vue';
 
 function isSharp(note) {
   const noteIndex = note % 12;
@@ -41,17 +19,23 @@ function isSharp(note) {
   return false;
 }
 
-function lcFirst(val) {
-  return String(val).charAt(0).toLowerCase() + String(val).slice(1);
-}
-
 const audio = reactive({
   context: new AudioContext(),
   tail: null,
+  semitoneFrom: 36,
+  semitoneTo: 96,
 });
 audio.maxFreq = computed(() => (audio.context ? audio.context.sampleRate / 2 : 0));
-audio.maxNote = computed(() => noteFromPitch(audio.maxFreq));
-audio.notesCount = computed(() => audio.maxNote + 1);
+audio.maxSemitone = computed(() => semitoneFromPitch(audio.maxFreq));
+audio.semitonesCount = computed(() => audio.semitoneTo - audio.semitoneFrom);
+audio.semitonesTotal = computed(() => audio.maxSemitone + 1);
+
+watch(() => audio.maxSemitone, (v, old) => {
+  if (old === v) return;
+  if (audio.semitoneTo !== 0 || audio.semitoneTo === v) return;
+
+  audio.semitoneTo = v;
+}, { immediate: true });
 
 const source = reactive({
   echo: false,
@@ -62,22 +46,13 @@ const source = reactive({
   pitch: -1,
   type: null,
 });
-source.note = computed(() => noteFromPitch(source.pitch));
+source.note = computed(() => semitoneFromPitch(source.pitch));
 source.noteName = computed(() => romanNoteStringsSharp[source.note % 12]);
 source.enNoteName = computed(() => enNoteStringsSharp[source.note % 12]);
 
 source.octave = computed(() => Math.round((source.note - 6) / 12));
-source.octaveSub = computed(
-  () => (source.octave < 3 ? 3 - source.octave : null),
-);
-source.octaveSup = computed(
-  () => (source.octave > 4 ? source.octave - 4 : null),
-);
 source.octaveName = computed(
-  () => romanOcaves[source.octave] || source.octave,
-);
-source.octaveNoteName = computed(
-  () => (source.octave === 4 ? lcFirst(source.noteName) : source.noteName),
+  () => romanOctaves[source.octave] || source.octave,
 );
 
 source.detune = computed(() => centsOffFromPitch(source.pitch, source.note));
@@ -103,7 +78,7 @@ function acf2p() {
   let SIZE = buf.length;
   let rms = 0;
 
-  for (let i = 0; i < SIZE; i++) {
+  for (let i = 0; i < SIZE; i += 1) {
     const val = buf[i];
     rms += val * val;
   }
@@ -114,13 +89,13 @@ function acf2p() {
   let r1 = 0;
   let r2 = SIZE - 1;
   const thres = 0.2;
-  for (let i = 0; i < SIZE / 2; i++) {
+  for (let i = 0; i < SIZE / 2; i += 1) {
     if (Math.abs(buf[i]) < thres) {
       r1 = i;
       break;
     }
   }
-  for (let i = 1; i < SIZE / 2; i++) {
+  for (let i = 1; i < SIZE / 2; i += 1) {
     if (Math.abs(buf[SIZE - i]) < thres) {
       r2 = SIZE - i;
       break;
@@ -131,20 +106,20 @@ function acf2p() {
   SIZE = buf.length;
 
   const c = new Array(SIZE).fill(0);
-  for (let i = 0; i < SIZE; i++) {
-    for (let j = 0; j < SIZE - i; j++) {
+  for (let i = 0; i < SIZE; i += 1) {
+    for (let j = 0; j < SIZE - i; j += 1) {
       c[i] += buf[j] * buf[j + i];
     }
   }
 
   let d = 0;
   while (c[d] > c[d + 1]) {
-    d++;
+    d += 1;
   }
 
   let maxval = -1;
   let maxpos = -1;
-  for (let i = d; i < SIZE; i++) {
+  for (let i = d; i < SIZE; i += 1) {
     if (c[i] > maxval) {
       maxval = c[i];
       maxpos = i;
@@ -289,46 +264,66 @@ function drawPiano() {
     visual.canvasCtx.fillStyle = 'rgb(100, 210, 240)';
     visual.canvasCtx.fillRect(0, 0, canvas.value.width, canvas.value.height);
 
-    const whiteWidth = Math.round((canvas.value.width * 12) / (audio.notesCount * 7));
-    const whiteHeight = canvas.value.height / 2;
+    const whiteWidth = (canvas.value.width * 12) / (audio.semitonesCount * 7);
+    const whiteHeight = Math.min(canvas.value.height, whiteWidth * 4);
 
-    const blackWidth = whiteWidth / 2;
+    const blackWidth = whiteWidth / 1.5;
     const blackHeight = whiteHeight * 0.7;
+    const blackOffset = whiteWidth / 2.5;
+
+    const heightOffset = canvas.value.height - whiteHeight;
 
     let sum = 0;
     let count = 0;
     let note = 0;
-    let nextNote = 1;
-    for (let i = 0; i < bufferLength; i += 1) {
+    let nextNote = audio.semitoneFrom;
+    let widthOffset = 0;
+    let i = Math.round((
+      (Math.max(audio.semitoneFrom, 0)) * bufferLength
+    ) / audio.semitonesTotal);
+    let blackFill = null;
+    let blackX = 0;
+    const maxIndex = Math.round((
+      (Math.min(audio.semitoneTo, audio.maxSemitone)) * bufferLength
+    ) / audio.semitonesTotal);
+    for (; i < maxIndex; i += 1) {
       sum += dataArray[i];
       count += 1;
 
-      note = Math.round((i * audio.notesCount) / bufferLength);
-      nextNote = Math.round(((i + 1) * audio.notesCount) / bufferLength);
+      note = nextNote;
+      nextNote = Math.round(((i + 1) * audio.semitonesTotal) / bufferLength);
       if (nextNote === note) continue;
 
       const v = sum / count;
-      sum = 0;
-      count = 0;
 
-      const noteNum = Math.floor((note * 7 + 1) / 12);
       if (isSharp(note)) {
-        visual.canvasCtx.fillStyle = note === source.note ? 'green' : `rgb(${v}, ${v}, ${v})`;
-        visual.canvasCtx.fillRect(
-          noteNum * whiteWidth + blackWidth,
-          canvas.value.height - whiteHeight,
-          blackWidth,
-          blackHeight,
-        );
+        blackFill = note === source.note ? 'green' : `rgb(${v}, ${v}, ${v})`;
+        blackX = widthOffset - blackOffset;
       } else {
         visual.canvasCtx.fillStyle = note === source.note ? 'green' : `rgb(255, ${255 - v}, ${255 - v})`;
         visual.canvasCtx.fillRect(
-          noteNum * whiteWidth + 1,
-          canvas.value.height - whiteHeight,
-          whiteWidth - 1,
+          widthOffset,
+          heightOffset,
+          whiteWidth - 2,
           whiteHeight,
         );
+
+        if (blackX) {
+          visual.canvasCtx.fillStyle = blackFill;
+          visual.canvasCtx.fillRect(
+            blackX,
+            heightOffset,
+            blackWidth,
+            blackHeight,
+          );
+          blackX = 0;
+        }
+
+        widthOffset += whiteWidth;
       }
+
+      sum = 0;
+      count = 0;
     }
   };
 
@@ -383,6 +378,10 @@ const sources = {
 };
 
 async function startContext(stream) {
+  if (!audio.context) {
+    audio.context = new AudioContext();
+  }
+
   source.source = audio.context.createMediaStreamSource(stream);
 
   source.stream = stream;
@@ -561,6 +560,20 @@ useResizeObserver(canvasWrap, () => {
           Resume
         </button>
       </template>
+      <span>Max: {{ audio.maxFreq }}Hz</span>
+    </span>
+    <span v-if="visual.drawer === drawPiano">
+      <button type="button" class="minus" @click="audio.semitoneFrom -= 1">-</button>
+      <RomanNote :note="audio.semitoneFrom" />
+      <button type="button" class="plus" @click="audio.semitoneFrom += 1">+</button>
+      —
+      <button type="button" class="minus" @click="audio.semitoneTo -= 1">-</button>
+      <RomanNote :note="audio.semitoneTo" />
+      <button type="button" class="plus" @click="audio.semitoneTo += 1">+</button>
+      ({{ audio.semitonesCount }} semitones)
+      (<RomanNote :note="0" />
+      —
+      <RomanNote :note="audio.maxSemitone" />)
     </span>
   </div>
   <main>
@@ -579,20 +592,13 @@ useResizeObserver(canvasWrap, () => {
       <span>
         <span class="pitch">
           <span>{{ source.octaveName || '-' }}</span>
-          <strong>{{
-            source.octaveNoteName || '-'
-          }}<sup v-if="source.octaveSup !== null">{{
-            source.octaveSup
-          }}</sup><sub v-if="source.octaveSub !== null">{{
-            source.octaveSub
-          }}</sub></strong>
+          <RomanNote :note="source.note" />
           <span>{{ (source.enNoteName || '-') + String(source.octave + 1) }}</span>
           <span>{{ source.detune }}</span>
           <span>({{ source.semitonesDetune }})</span>
           <span>{{ Math.round((source.pitch + Number.EPSILON) * 10) / 10 }}Hz</span>
         </span>
       </span>
-      <span>Max: {{ audio.maxFreq }}Hz</span>
     </div>
     <div ref="canvasWrap" class="canvas-wrap">
       <canvas ref="canvas" />
@@ -635,5 +641,15 @@ useResizeObserver(canvasWrap, () => {
 }
 button.active {
   background-color: lightgray;
+}
+.plus, .minus {
+  border-radius: 100%;
+  margin: 0 0.1rem;
+}
+.plus {
+  background-color: lightgreen;
+}
+.minus {
+  background-color: pink;
 }
 </style>
