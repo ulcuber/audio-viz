@@ -571,9 +571,13 @@ useResizeObserver(canvasWrap, () => {
       <RomanNote :note="audio.semitoneTo" />
       <button type="button" class="plus" @click="audio.semitoneTo += 1">+</button>
       ({{ audio.semitonesCount }} semitones)
-      (<RomanNote :note="0" />
+      (<button type="button" class="note-button" @click="audio.semitoneFrom = 0">
+        <RomanNote :note="0" />
+      </button>
       —
-      <RomanNote :note="audio.maxSemitone" />)
+      <button type="button" class="note-button" @click="audio.semitoneTo = audio.maxSemitone">
+        <RomanNote :note="audio.maxSemitone" />
+      </button>)
     </span>
   </div>
   <main>
@@ -651,5 +655,11 @@ button.active {
 }
 .minus {
   background-color: pink;
+}
+.note-button {
+  min-height: 2rem;
+  border-radius: 100%;
+  background-color: black;
+  color: white;
 }
 </style>

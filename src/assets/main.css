@@ -1,7 +1,7 @@
 html {
   box-sizing: border-box;
   height: 100%;
-  line-height: 1.5;
+  line-height: 1;
   text-size-adjust: 100%;
   -ms-overflow-style: scrollbar;
 }
@@ -18,4 +18,8 @@ body {
   height: 100%;
   margin: 0;
   font-family: Neucha, sans-serif;
+}
+
+button:hover {
+    cursor: pointer;
 }
