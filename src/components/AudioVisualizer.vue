@@ -5,6 +5,7 @@ import {
 import { useResizeObserver } from '@vueuse/core';
 import {
   romanOctaves, romanNoteStringsSharp, enNoteStringsSharp, fftSizes,
+  drawersNamesRu,
 } from '../dict';
 import { semitoneFromPitch, centsOffFromPitch } from '../util';
 import RomanNote from './RomanNote.vue';
@@ -23,7 +24,7 @@ const audio = reactive({
   context: new AudioContext(),
   tail: null,
   semitoneFrom: 36,
-  semitoneTo: 96,
+  semitoneTo: 84,
 });
 audio.maxFreq = computed(() => (audio.context ? audio.context.sampleRate / 2 : 0));
 audio.maxSemitone = computed(() => semitoneFromPitch(audio.maxFreq));
@@ -61,7 +62,7 @@ source.semitonesDetune = computed(() => Math.floor(source.detune / 100));
 const visual = reactive({
   animationId: null,
   canvasCtx: null,
-  drawer: null,
+  drawerKey: null,
   next: () => {},
 });
 
@@ -331,6 +332,115 @@ function drawPiano() {
   draw();
 }
 
+function bassSteps(n) {
+  // TODO: formula
+  switch (n) {
+    case 1:
+      return 1;
+    case 2:
+    case 3:
+      return 2;
+    case 4:
+    case 5:
+      return 3;
+    case 6:
+    case 7:
+      return 4;
+    case 8:
+      return 5;
+    case 9:
+    case 10:
+      return 6;
+    case 11:
+    case 12:
+      return 7;
+    case 13:
+      return 8;
+    case 14:
+    case 15:
+      return 9;
+    case 16:
+    case 17:
+      return 10;
+    case 18:
+    case 19:
+      return 11;
+    case 20:
+      return 12;
+    default:
+      return 0;
+  }
+}
+
+function drawBass() {
+  enshureContext();
+
+  const maxTone = 60;
+  const semitonesCount = 20;
+
+  const draw = () => {
+    visual.animationId = requestAnimationFrame(visual.next);
+
+    source.pitch = acf2p();
+
+    const semitone = semitoneFromPitch(source.pitch);
+
+    const lineHeight = 3;
+    const betweenHeight = canvas.value.height / 6;
+    const step = betweenHeight / 2;
+    const fontOffset = betweenHeight / 3;
+
+    visual.canvasCtx.fillStyle = 'white';
+    visual.canvasCtx.fillRect(0, 0, canvas.value.width, canvas.value.height);
+
+    for (let offset = betweenHeight; offset < canvas.value.height; offset += betweenHeight) {
+      visual.canvasCtx.fillStyle = 'black';
+      visual.canvasCtx.fillRect(0, offset, canvas.value.width, lineHeight);
+    }
+
+    const keyFont = (betweenHeight - lineHeight) * 6;
+    visual.canvasCtx.font = `${keyFont}px serif`;
+    visual.canvasCtx.fillText(
+      '𝄢',
+      lineHeight,
+      betweenHeight * 2 + keyFont / 2 + fontOffset + lineHeight * 2,
+    );
+
+    if (!Number.isFinite(semitone)) {
+      return;
+    }
+
+    const n = maxTone - semitone;
+    if (n < 0 || n > semitonesCount) {
+      return;
+    }
+
+    const sharp = isSharp(semitone);
+    const font = betweenHeight - lineHeight;
+    const noteFont = font * 4;
+
+    const steps = bassSteps(n);
+    const pitchOffset = steps * step + lineHeight + fontOffset;
+    if (sharp) {
+      visual.canvasCtx.font = `${font}px serif`;
+      visual.canvasCtx.fillText(
+        '♯',
+        canvas.value.width / 2,
+        pitchOffset,
+      );
+    }
+    visual.canvasCtx.font = `${noteFont}px serif`;
+    visual.canvasCtx.fillText(
+      '𝅝',
+      canvas.value.width / 2 + font / 2,
+      pitchOffset,
+    );
+  };
+
+  visual.next = draw;
+  draw();
+}
+
 function pause() {
   if (audio.context?.state !== 'suspened') {
     audio.context.suspend();
@@ -350,11 +460,13 @@ function drawOff() {
 }
 
 const drawers = {
+  bass: drawBass,
   piano: drawPiano,
   bars: drawBars,
   sin: drawSin,
   off: drawOff,
 };
+visual.drawer = computed(() => drawers[visual.drawerKey]);
 
 async function getDisplayStream() {
   const stream = await navigator.mediaDevices
@@ -437,7 +549,7 @@ async function init() {
 
   start(Object.keys(sources)[0]);
 
-  visual.drawer = drawPiano;
+  visual.drawerKey = 'bass';
 }
 
 function stop() {
@@ -562,7 +674,7 @@ useResizeObserver(canvasWrap, () => {
       </template>
       <span>Max: {{ audio.maxFreq }}Hz</span>
     </span>
-    <span v-if="visual.drawer === drawPiano">
+    <span v-if="visual.drawerKey === 'piano'">
       <button type="button" class="minus" @click="audio.semitoneFrom -= 1">-</button>
       <RomanNote :note="audio.semitoneFrom" />
       <button type="button" class="plus" @click="audio.semitoneFrom += 1">+</button>
@@ -584,13 +696,13 @@ useResizeObserver(canvasWrap, () => {
     <div v-if="audio.context?.state" class="canvas-controls">
       <span class="drawers">
         <button
-          v-for="drawer, name in drawers"
-          :key="name"
+          v-for="drawer, key in drawers"
+          :key="key"
           type="button"
-          :disabled="drawer === visual.drawer"
-          @click="visual.drawer = drawer"
+          :disabled="key === visual.drawerKey"
+          @click="visual.drawerKey = key"
         >
-          {{ name }}
+          {{ drawersNamesRu[key] }}
         </button>
       </span>
       <span>
