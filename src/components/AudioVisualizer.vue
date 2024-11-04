@@ -378,6 +378,12 @@ function drawBass() {
   const maxTone = 60;
   const semitonesCount = 20;
 
+  const clef = '𝄢';
+  visual.canvasCtx.font = '10px serif';
+  const text = visual.canvasCtx.measureText(clef);
+  const clefK = text.actualBoundingBoxAscent === 8 ? 6 : 4.2;
+  const clefOffset = text.actualBoundingBoxAscent - 8;
+
   const draw = () => {
     visual.animationId = requestAnimationFrame(visual.next);
 
@@ -398,12 +404,12 @@ function drawBass() {
       visual.canvasCtx.fillRect(0, offset, canvas.value.width, lineHeight);
     }
 
-    const keyFont = (betweenHeight - lineHeight) * 6;
-    visual.canvasCtx.font = `${keyFont}px serif`;
+    const clefFont = Math.floor((betweenHeight - lineHeight) * clefK);
+    visual.canvasCtx.font = `${clefFont}px serif`;
     visual.canvasCtx.fillText(
-      '𝄢',
+      clef,
       lineHeight,
-      betweenHeight * 2 + keyFont / 2 + fontOffset + lineHeight * 2,
+      (clefOffset * 6 + betweenHeight) * 2 + clefFont / 2 + fontOffset + lineHeight * 2,
     );
 
     if (!Number.isFinite(semitone)) {
@@ -433,7 +439,7 @@ function drawBass() {
     visual.canvasCtx.fillText(
       '𝅝',
       canvas.value.width / 2 + font / 2,
-      pitchOffset,
+      pitchOffset + clefOffset * 8,
     );
   };
 
