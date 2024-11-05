@@ -7,7 +7,7 @@ import {
   romanOctaves, romanNoteStringsSharp, enNoteStringsSharp, fftSizes,
   drawersNamesRu,
 } from '../dict';
-import { semitoneFromPitch, centsOffFromPitch } from '../util';
+import { semitoneFromPitch, centsOffFromPitch, frequencyFromSemitone } from '../util';
 import RomanNote from './RomanNote.vue';
 
 function isSharp(note) {
@@ -37,6 +37,9 @@ watch(() => audio.maxSemitone, (v, old) => {
 
   audio.semitoneTo = v;
 }, { immediate: true });
+
+let oscillator = null;
+let oscillatorConnected = false;
 
 const source = reactive({
   echo: false,
@@ -249,6 +252,17 @@ function drawSin() {
   draw();
 }
 
+const piano = reactive({
+});
+piano.whiteWidth = computed(() => (canvas.value.width * 12) / (audio.semitonesCount * 7));
+piano.whiteHeight = computed(() => Math.min(canvas.value.height, piano.whiteWidth * 4));
+piano.heightOffset = computed(() => canvas.value.height - piano.whiteHeight);
+
+piano.blackWidth = computed(() => piano.whiteWidth / 1.5);
+piano.blackHeight = computed(() => piano.whiteHeight * 0.7);
+piano.blackOffset = computed(() => piano.whiteWidth / 2.5);
+piano.blackEnd = computed(() => piano.heightOffset + piano.blackHeight);
+
 function drawPiano() {
   enshureContext();
 
@@ -264,15 +278,6 @@ function drawPiano() {
 
     visual.canvasCtx.fillStyle = 'rgb(100, 210, 240)';
     visual.canvasCtx.fillRect(0, 0, canvas.value.width, canvas.value.height);
-
-    const whiteWidth = (canvas.value.width * 12) / (audio.semitonesCount * 7);
-    const whiteHeight = Math.min(canvas.value.height, whiteWidth * 4);
-
-    const blackWidth = whiteWidth / 1.5;
-    const blackHeight = whiteHeight * 0.7;
-    const blackOffset = whiteWidth / 2.5;
-
-    const heightOffset = canvas.value.height - whiteHeight;
 
     let sum = 0;
     let count = 0;
@@ -299,28 +304,28 @@ function drawPiano() {
 
       if (isSharp(note)) {
         blackFill = note === source.note ? 'green' : `rgb(${v}, ${v}, ${v})`;
-        blackX = widthOffset - blackOffset;
+        blackX = widthOffset - piano.blackOffset;
       } else {
         visual.canvasCtx.fillStyle = note === source.note ? 'green' : `rgb(255, ${255 - v}, ${255 - v})`;
         visual.canvasCtx.fillRect(
           widthOffset,
-          heightOffset,
-          whiteWidth - 2,
-          whiteHeight,
+          piano.heightOffset,
+          piano.whiteWidth - 2,
+          piano.whiteHeight,
         );
 
         if (blackX) {
           visual.canvasCtx.fillStyle = blackFill;
           visual.canvasCtx.fillRect(
             blackX,
-            heightOffset,
-            blackWidth,
-            blackHeight,
+            piano.heightOffset,
+            piano.blackWidth,
+            piano.blackHeight,
           );
           blackX = 0;
         }
 
-        widthOffset += whiteWidth;
+        widthOffset += piano.whiteWidth;
       }
 
       sum = 0;
@@ -519,6 +524,23 @@ async function startContext(stream) {
   source.analyser = analyser;
 
   audio.tail = source.source;
+
+  const len = 50;
+  const real = new Float32Array(len);
+  const imag = new Float32Array(len);
+  real[0] = 0;
+  imag[0] = 0;
+  for (let i = 1, v = 1; i < len; i += 1, v = 1 / (i * i)) {
+    real[i] = v;
+    imag[i] = v;
+  }
+  const wave = audio.context.createPeriodicWave(real, imag, { disableNormalization: true });
+
+  oscillator = audio.context.createOscillator();
+  // oscillator.type = 'sine';
+  oscillator.setPeriodicWave(wave);
+  oscillator.frequency.setValueAtTime(frequencyFromSemitone(42), audio.context.currentTime);
+  oscillator.start();
 }
 
 async function initCanvas() {
@@ -610,6 +632,82 @@ useResizeObserver(canvasWrap, () => {
   const intendedHeight = canvasWrap.value.clientHeight;
   canvas.value.setAttribute('height', intendedHeight);
 });
+
+function onMousemove(event) {
+  const x = event.offsetX;
+  const y = event.offsetY;
+
+  let s = Math.round(
+    ((x - piano.blackWidth) * 12) / (piano.whiteWidth * 7),
+  ) + audio.semitoneFrom;
+  if (isSharp(s)) {
+    if (y > piano.blackEnd) {
+      s -= 1;
+    }
+  }
+  oscillator.frequency.setValueAtTime(frequencyFromSemitone(s), audio.context.currentTime);
+}
+
+function onMousedown(event) {
+  onMousemove(event);
+
+  if (!oscillatorConnected) {
+    oscillatorConnected = true;
+    oscillator.connect(audio.context.destination);
+    oscillator.connect(source.analyser);
+  }
+
+  canvas.value.addEventListener('mousemove', onMousemove);
+}
+
+function onMouseup() {
+  if (oscillatorConnected) {
+    oscillatorConnected = false;
+    oscillator.disconnect(audio.context.destination);
+    oscillator.disconnect(source.analyser);
+  }
+
+  canvas.value.removeEventListener('mousemove', onMousemove);
+}
+
+function onTouchmove(event) {
+  const touches = event.changedTouches;
+  const touch = touches[touches.length - 1];
+  const x = touch.clientX;
+  const y = touch.clientY;
+
+  let s = Math.round(
+    ((x - piano.blackWidth) * 12) / (piano.whiteWidth * 7),
+  ) + audio.semitoneFrom;
+  if (isSharp(s)) {
+    if (y > piano.blackEnd) {
+      s -= 1;
+    }
+  }
+  oscillator.frequency.setValueAtTime(frequencyFromSemitone(s), audio.context.currentTime);
+}
+
+function onTouchstart(event) {
+  onTouchmove(event);
+
+  if (!oscillatorConnected) {
+    oscillatorConnected = true;
+    oscillator.connect(audio.context.destination);
+    oscillator.connect(source.analyser);
+  }
+
+  canvas.value.addEventListener('touchmove', onTouchmove);
+}
+
+function onTouchend() {
+  if (oscillatorConnected) {
+    oscillatorConnected = false;
+    oscillator.disconnect(audio.context.destination);
+    oscillator.disconnect(source.analyser);
+  }
+
+  canvas.value.removeEventListener('touchmove', onTouchmove);
+}
 </script>
 
 <template>
@@ -723,7 +821,13 @@ useResizeObserver(canvasWrap, () => {
       </span>
     </div>
     <div ref="canvasWrap" class="canvas-wrap">
-      <canvas ref="canvas" />
+      <canvas
+        ref="canvas"
+        @mousedown="onMousedown"
+        @mouseup="onMouseup"
+        @touchstart="onTouchstart"
+        @touchend="onTouchend"
+      />
     </div>
   </main>
 </template>

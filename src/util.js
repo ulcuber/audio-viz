@@ -7,7 +7,7 @@ export function semitoneFromPitch(frequency) {
   return Math.round(noteNum) + 69;
 }
 
-export function frequencyFromNoteNumber(note) {
+export function frequencyFromSemitone(note) {
   return 440 * 2 ** ((note - 69) / 12);
 }
 
@@ -16,7 +16,7 @@ const OCTAVE_CENTS = 1200;
 export function centsOffFromPitch(frequency, note) {
   return Math.floor(
     (
-      OCTAVE_CENTS * Math.log(frequency / frequencyFromNoteNumber(note))
+      OCTAVE_CENTS * Math.log(frequency / frequencyFromSemitone(note))
     ) / Math.log(2),
   );
 }
