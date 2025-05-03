@@ -7,7 +7,7 @@ import VueI18nPlugin from '@intlify/unplugin-vue-i18n/vite';
 // import basicSsl from '@vitejs/plugin-basic-ssl';
 import VueDevTools from 'vite-plugin-vue-devtools';
 
-const VITE_BASE_URL = process.env.VITE_BASE_URL || 'http://localhost:5173';
+const VITE_BASE_URL = process.env.VITE_BASE_URL || 'https://ulcuber.github.io';
 const baseUrl = `${VITE_BASE_URL}/audio-viz`;
 
 // https://vitejs.dev/config/
