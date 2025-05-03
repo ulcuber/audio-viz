@@ -73,7 +73,7 @@ jobs:
       - name: Static HTML export with Nuxt
         run: ${{ steps.detect-package-manager.outputs.manager }} run build
         env:
-            VITE_ASSET_URL: ${{ vars.ASSET_URL }}
+            VITE_BASE_URL: ${{ vars.ASSET_URL }}
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
