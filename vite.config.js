@@ -3,6 +3,7 @@ import { resolve, dirname } from 'node:path';
 
 import { defineConfig } from 'vite';
 import vue from '@vitejs/plugin-vue';
+// eslint-disable-next-line import/no-unresolved
 import VueI18nPlugin from '@intlify/unplugin-vue-i18n/vite';
 // import basicSsl from '@vitejs/plugin-basic-ssl';
 import VueDevTools from 'vite-plugin-vue-devtools';

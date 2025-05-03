@@ -82,7 +82,7 @@ watch(() => audio.maxSemitone, (v, old) => {
 let pianoOscillator = null;
 let pianoOscillatorConnected = false;
 
-const oscillators = [];
+// const oscillators = [];
 
 const source = reactive({
   echo: false,
@@ -557,6 +557,7 @@ function drawPiano() {
 
       note = nextNote;
       nextNote = Math.round(((i + 1) * audio.semitonesTotal) / bufferLength);
+      // eslint-disable-next-line no-continue
       if (nextNote === note) continue;
 
       const v = sum / count;
@@ -1160,12 +1161,12 @@ function onTouchend() {
         t('analyser.fast-fourier-transform-size')
       }}</b>: {{ source.analyser.fftSize }}</span>
       <button
-        v-for="size in fftSizes"
-        :key="size"
+        v-for="fftSize in fftSizes"
+        :key="fftSize"
         type="button"
-        :class="{ active: source.analyser.fftSize === size }"
-        @click="source.analyser.fftSize = size; visual.next = visual.drawer"
-      >{{ size }}</button>
+        :class="{ active: source.analyser.fftSize === fftSize }"
+        @click="source.analyser.fftSize = fftSize; visual.next = visual.drawer"
+      >{{ fftSize }}</button>
     </span>
   </div>
   <div class="controls ma">
@@ -1263,18 +1264,6 @@ function onTouchend() {
 }
 .ma > *:not(:last-child) {
   margin-right: 0.5rem;
-}
-.pitch {
-  display: inline-flex;
-  min-height: 2rem;
-  justify-content: space-around;
-  align-items: center;
-}
-.note, .cents, .hz {
-  min-width: 3rem;
-}
-.octave {
-  min-width: 9rem;
 }
 button.active {
   background-color: lightgray;

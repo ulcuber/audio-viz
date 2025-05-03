@@ -20,7 +20,7 @@ export default class Semitone {
     this.canvasCtx.font = `${this.size}px serif`;
     let metrics = this.canvasCtx.measureText('Соль♯');
     this.maxCellWidth += metrics.width;
-    this.canvasCtx.font = `${this.size/2}px serif`;
+    this.canvasCtx.font = `${this.size / 2}px serif`;
     metrics = this.canvasCtx.measureText('1');
     this.maxCellWidth += metrics.width;
   }
