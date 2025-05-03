@@ -375,7 +375,8 @@ if (typeof performance === 'undefined') {
 let last = performance.now();
 let ticks = 0;
 let canvasTicks = 0;
-const renders = 0;
+let renders = -1;
+renders += 1;
 function tick() {
   ticks += 1;
   canvasTicks += 1;
