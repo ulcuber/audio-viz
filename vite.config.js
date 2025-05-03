@@ -39,11 +39,11 @@ export default defineConfig({
     },
   },
   build: {
-    sourcemap: true,
-    rollupOptions: {
-      output: {
-        sourcemapBaseUrl: `${baseUrl}/assets`,
-      },
-    },
+    // sourcemap: true,
+    // rollupOptions: {
+    //   output: {
+    //     sourcemapBaseUrl: `${baseUrl}/assets`,
+    //   },
+    // },
   },
 });
