@@ -1,14 +1,55 @@
 <script setup>
 import {
   onMounted, onBeforeUnmount, ref, watch, reactive, computed,
+  inject,
 } from 'vue';
-import { useResizeObserver } from '@vueuse/core';
 import {
-  romanOctaves, romanNoteStringsSharp, enNoteStringsSharp, fftSizes,
-  drawersNamesRu,
-} from '../dict';
-import { semitoneFromPitch, centsOffFromPitch, frequencyFromSemitone } from '../util';
+  useResizeObserver, useBattery, useWindowFocus, useFullscreen, useMemory, useDevicesList,
+} from '@vueuse/core';
+import { useI18n } from 'vue-i18n';
+import { fftSizes } from '../dict';
+import { semitoneFromPitch, frequencyFromSemitone } from '../util';
 import RomanNote from './RomanNote.vue';
+import Semitone from './Semitone';
+
+const { audioInputs: microphones } = useDevicesList();
+
+function size(v) {
+  const kb = v / 1024 / 1024;
+  return `${kb.toFixed(2)} MB`;
+}
+const { isSupported: isMemorySupported, memory: memoryInfo } = useMemory();
+const usedMemory = computed(() => {
+  if (!isMemorySupported.value) return null;
+
+  const used = memoryInfo?.value?.usedJSHeapSize;
+  if (used) {
+    return size(used);
+  }
+
+  return null;
+});
+
+const focused = useWindowFocus();
+
+const { t } = useI18n({});
+
+const battery = useBattery();
+const batteryPercent = computed(() => Math.round(battery.level.value * 100));
+const batteryFormat = new Intl.DurationFormat(undefined, { style: 'narrow' });
+const batteryTime = computed(() => {
+  const duration = {};
+  let s = (battery.charging.value ? battery.chargingTime : battery.dischargingTime).value || 0;
+  duration.seconds = Math.round(s % 60);
+  s /= 60;
+  duration.minutes = Math.round(s % 60);
+  s /= 60;
+  duration.hours = Math.round(s % 24);
+  s /= 24;
+  duration.days = Math.round(s % 30);
+
+  return batteryFormat.format(duration);
+});
 
 function isSharp(note) {
   const noteIndex = note % 12;
@@ -38,8 +79,10 @@ watch(() => audio.maxSemitone, (v, old) => {
   audio.semitoneTo = v;
 }, { immediate: true });
 
-let oscillator = null;
-let oscillatorConnected = false;
+let pianoOscillator = null;
+let pianoOscillatorConnected = false;
+
+const oscillators = [];
 
 const source = reactive({
   echo: false,
@@ -47,49 +90,83 @@ const source = reactive({
   tracks: [],
   source: null,
   analyser: null,
-  pitch: -1,
   type: null,
 });
-source.note = computed(() => semitoneFromPitch(source.pitch));
-source.noteName = computed(() => romanNoteStringsSharp[source.note % 12]);
-source.enNoteName = computed(() => enNoteStringsSharp[source.note % 12]);
 
-source.octave = computed(() => Math.round((source.note - 6) / 12));
-source.octaveName = computed(
-  () => romanOctaves[source.octave] || source.octave,
-);
-
-source.detune = computed(() => centsOffFromPitch(source.pitch, source.note));
-source.semitonesDetune = computed(() => Math.floor(source.detune / 100));
-
+let canvasCtx = null;
+let animationId = null;
 const visual = reactive({
-  animationId: null,
-  canvasCtx: null,
   drawerKey: null,
+  prev: () => {},
   next: () => {},
+  needsRoman: true,
 });
 
+function initCanvas(cnv, wrap) {
+  const ctx = cnv.getContext('2d');
+
+  const intendedWidth = wrap.clientWidth;
+  cnv.setAttribute('width', intendedWidth);
+
+  const intendedHeight = wrap.clientHeight;
+  cnv.setAttribute('height', intendedHeight);
+
+  ctx.clearRect(0, 0, cnv.width, cnv.height);
+
+  return ctx;
+}
+
 const canvasWrap = ref();
+const { toggle, isFullscreen } = useFullscreen(canvasWrap);
 const canvas = ref();
+
+const canvasWrapOriginal = ref();
+const canvasOriginal = ref();
+let originalCtx = null;
+
+const canvasWrapAcf2p = ref();
+const canvasAcf2p = ref();
+let acf2pCtx = null;
 
 // Implements the ACF2+ algorithm
 function acf2p() {
+  if (!originalCtx) {
+    originalCtx = initCanvas(canvasOriginal.value, canvasWrapOriginal.value);
+  }
+  if (!acf2pCtx) {
+    acf2pCtx = initCanvas(canvasAcf2p.value, canvasWrapAcf2p.value);
+  }
+
   const bufferLength = source.analyser.frequencyBinCount;
   let buf = new Float32Array(bufferLength);
 
   source.analyser.getFloatTimeDomainData(buf);
 
   let SIZE = buf.length;
-  let rms = 0;
 
+  // root mean square
+  let rms = 0;
   for (let i = 0; i < SIZE; i += 1) {
     const val = buf[i];
     rms += val * val;
   }
   rms = Math.sqrt(rms / SIZE);
   // not enough signal
-  if (rms < 0.01) return -1;
+  if (rms < 0.01) {
+    originalCtx.fillStyle = 'rgb(0, 0, 0)';
+    originalCtx.fillRect(0, 0, canvasOriginal.value.width, canvasOriginal.value.height);
 
+    originalCtx.fillStyle = 'white';
+    originalCtx.font = '30px serif';
+    originalCtx.fillText(
+      `RMS: ${rms}`,
+      10,
+      30,
+    );
+    return -1;
+  }
+
+  // slice low borders
   let r1 = 0;
   let r2 = SIZE - 1;
   const thres = 0.2;
@@ -106,9 +183,76 @@ function acf2p() {
     }
   }
 
+  // render sin
+  originalCtx.fillStyle = 'rgb(0, 0, 0)';
+  originalCtx.fillRect(0, 0, canvasOriginal.value.width, canvasOriginal.value.height);
+
+  originalCtx.lineWidth = 2;
+  originalCtx.strokeStyle = 'rgb(256, 256, 256)';
+
+  originalCtx.beginPath();
+
+  const sliceWidth = (canvasOriginal.value.width * 1.0) / SIZE;
+  let x = 0;
+
+  let bufAbsMax = 0;
+  for (let i = 0; i < SIZE; i += 1) {
+    const abs = Math.abs(buf[i]);
+    if (abs > bufAbsMax) {
+      bufAbsMax = buf[i];
+    }
+  }
+  const sinRatio = canvasOriginal.value.height / bufAbsMax / 2;
+  const halfHeight = canvasOriginal.value.height / 2;
+
+  for (let i = 0; i < SIZE; i += 1) {
+    const y = buf[i] * sinRatio + halfHeight;
+
+    if (i === 0) {
+      originalCtx.moveTo(x, y);
+    } else {
+      originalCtx.lineTo(x, y);
+    }
+
+    x += sliceWidth;
+  }
+
+  originalCtx.lineTo(canvasOriginal.value.width, 0);
+  originalCtx.stroke();
+
+  const itemOffset = canvasOriginal.value.width / bufferLength;
+  originalCtx.fillStyle = 'red';
+  originalCtx.fillRect(
+    r1 * itemOffset,
+    0,
+    itemOffset,
+    canvasOriginal.value.height,
+  );
+  originalCtx.fillRect(
+    r2 * itemOffset,
+    0,
+    itemOffset,
+    canvasOriginal.value.height,
+  );
+
+  originalCtx.fillStyle = 'white';
+  originalCtx.font = '30px serif';
+  originalCtx.fillText(
+    `RMS: ${rms}`,
+    10,
+    30,
+  );
+  originalCtx.fillText(
+    `x${sinRatio}`,
+    10,
+    60,
+  );
+  // end render sin
+
   buf = buf.slice(r1, r2);
   SIZE = buf.length;
 
+  // smooth values
   const c = new Array(SIZE).fill(0);
   for (let i = 0; i < SIZE; i += 1) {
     for (let j = 0; j < SIZE - i; j += 1) {
@@ -130,7 +274,42 @@ function acf2p() {
     }
   }
 
+  acf2pCtx.fillStyle = 'rgb(0, 0, 0)';
+  acf2pCtx.fillRect(0, 0, canvasAcf2p.value.width, canvasAcf2p.value.height);
+
+  const barWidth = canvasAcf2p.value.width / SIZE;
+  const visibleBarWidth = barWidth - 1;
+  x = barWidth;
+  for (let i = 0; i < SIZE; i += 1) {
+    const barHeight = (canvasAcf2p.value.height * c[i]) / c[0];
+
+    acf2pCtx.fillStyle = `rgb(${barHeight + 200},${i + 180},203)`;
+    acf2pCtx.fillRect(
+      x,
+      canvasAcf2p.value.height - barHeight,
+      visibleBarWidth,
+      barHeight,
+    );
+
+    x += barWidth;
+  }
+
+  acf2pCtx.fillStyle = 'white';
+  acf2pCtx.fillRect(
+    d * barWidth,
+    0,
+    barWidth,
+    canvasAcf2p.value.height,
+  );
+
   let T0 = maxpos;
+  acf2pCtx.fillStyle = 'blue';
+  acf2pCtx.fillRect(
+    T0 * barWidth,
+    0,
+    barWidth,
+    canvasAcf2p.value.height,
+  );
 
   const x1 = c[T0 - 1];
   const x2 = c[T0];
@@ -139,6 +318,13 @@ function acf2p() {
   if (a) {
     const b = (x3 - x1) / 2;
     T0 -= b / (2 * a);
+    acf2pCtx.fillStyle = 'green';
+    acf2pCtx.fillRect(
+      T0 * barWidth,
+      0,
+      barWidth,
+      canvasAcf2p.value.height,
+    );
   }
 
   return audio.context.sampleRate / T0;
@@ -151,11 +337,19 @@ function stopStream(stream) {
 }
 
 function stopDrawing() {
-  if (visual.animationId) {
-    cancelAnimationFrame(visual.animationId);
-    visual.animationId = null;
+  if (animationId) {
+    cancelAnimationFrame(animationId);
+    animationId = null;
   }
+  visual.prev = visual.next;
   visual.next = () => {};
+}
+
+function resumeDrawing() {
+  visual.next = visual.prev;
+  if (!animationId) {
+    visual.next();
+  }
 }
 
 function enshureContext() {
@@ -166,41 +360,87 @@ function enshureContext() {
   }
 }
 
+const fps = ref(0);
+const fpsEvery = ref(60);
+const canvasEvery = ref(10);
+
+if (typeof performance === 'undefined') {
+  window.performance = {
+    now() {
+      return Date().valueOf();
+    },
+  };
+}
+
+let last = performance.now();
+let ticks = 0;
+let canvasTicks = 0;
+const renders = 0;
+function tick() {
+  ticks += 1;
+  canvasTicks += 1;
+  if (ticks >= fpsEvery.value) {
+    const now = performance.now();
+    const diff = now - last;
+    fps.value = Math.round(1000 / (diff / ticks));
+    last = now;
+    ticks = 0;
+
+    return true;
+  }
+
+  return false;
+}
+
 function drawBars() {
   enshureContext();
 
   const bufferLength = source.analyser.frequencyBinCount;
-  // const dataArray = new Uint8Array(bufferLength);
-  const dataArray = new Float32Array(bufferLength);
+  const dataArray = new Uint8Array(bufferLength);
+  // const dataArray = new Float32Array(bufferLength);
+
+  const currentSemitone = new Semitone(canvasCtx, t);
 
   const draw = () => {
-    visual.animationId = requestAnimationFrame(visual.next);
+    tick();
+    animationId = requestAnimationFrame(visual.next);
 
-    // source.analyser.getByteFrequencyData(dataArray);
-    source.analyser.getFloatFrequencyData(dataArray);
+    source.analyser.getByteFrequencyData(dataArray);
+    // source.analyser.getFloatFrequencyData(dataArray);
 
-    source.pitch = acf2p();
+    const currentPitch = acf2p();
+    currentSemitone.setPitch(currentPitch);
 
-    visual.canvasCtx.fillStyle = 'rgb(0, 0, 0)';
-    visual.canvasCtx.fillRect(0, 0, canvas.value.width, canvas.value.height);
+    if (canvasTicks < canvasEvery.value) {
+      return;
+    }
+    canvasTicks = 0;
+
+    canvasCtx.fillStyle = 'rgb(0, 0, 0)';
+    canvasCtx.fillRect(0, 0, canvas.value.width, canvas.value.height);
 
     const barWidth = canvas.value.width / bufferLength;
+    const visibleBarWidth = barWidth - 1;
     let x = 0;
 
     for (let i = 0; i < bufferLength; i += 1) {
-      // const barHeight = dataArray[i];
-      const barHeight = dataArray[i] - source.analyser.minDecibels;
+      const barHeight = (dataArray[i] * canvas.value.height) / 255;
+      // const barHeight = (dataArray[i] - source.analyser.minDecibels) * 2;
 
-      visual.canvasCtx.fillStyle = `rgb(${barHeight + 200},${i + 180},203)`;
-      visual.canvasCtx.fillRect(
+      const pitch = (audio.maxFreq * i) / bufferLength;
+      canvasCtx.fillStyle = pitch === currentPitch
+        ? 'white' : `rgb(${barHeight + 200},${i + 180},203)`;
+      canvasCtx.fillRect(
         x,
         canvas.value.height - barHeight,
-        barWidth,
+        visibleBarWidth,
         barHeight,
       );
 
-      x += barWidth + 1;
+      x += barWidth;
     }
+
+    currentSemitone.render();
   };
 
   visual.next = draw;
@@ -213,20 +453,24 @@ function drawSin() {
   const bufferLength = source.analyser.fftSize;
   const dataArray = new Uint8Array(bufferLength);
 
+  const currentSemitone = new Semitone(canvasCtx, t);
+
   const draw = () => {
-    visual.animationId = requestAnimationFrame(visual.next);
+    tick();
+    animationId = requestAnimationFrame(visual.next);
 
     source.analyser.getByteTimeDomainData(dataArray);
 
-    source.pitch = acf2p();
+    const currentPitch = acf2p();
+    currentSemitone.setPitch(currentPitch);
 
-    visual.canvasCtx.fillStyle = 'rgb(0, 0, 0)';
-    visual.canvasCtx.fillRect(0, 0, canvas.value.width, canvas.value.height);
+    canvasCtx.fillStyle = 'rgb(0, 0, 0)';
+    canvasCtx.fillRect(0, 0, canvas.value.width, canvas.value.height);
 
-    visual.canvasCtx.lineWidth = 2;
-    visual.canvasCtx.strokeStyle = 'rgb(256, 256, 256)';
+    canvasCtx.lineWidth = 2;
+    canvasCtx.strokeStyle = 'rgb(256, 256, 256)';
 
-    visual.canvasCtx.beginPath();
+    canvasCtx.beginPath();
 
     const sliceWidth = (canvas.value.width * 1.0) / bufferLength;
     let x = 0;
@@ -236,32 +480,33 @@ function drawSin() {
       const y = canvas.value.height - ((v * canvas.value.height) / 2);
 
       if (i === 0) {
-        visual.canvasCtx.moveTo(x, y);
+        canvasCtx.moveTo(x, y);
       } else {
-        visual.canvasCtx.lineTo(x, y);
+        canvasCtx.lineTo(x, y);
       }
 
       x += sliceWidth;
     }
 
-    visual.canvasCtx.lineTo(canvas.value.width, 0);
-    visual.canvasCtx.stroke();
+    canvasCtx.lineTo(canvas.value.width, 0);
+    canvasCtx.stroke();
+
+    currentSemitone.render();
   };
 
   visual.next = draw;
   draw();
 }
 
-const piano = reactive({
-});
-piano.whiteWidth = computed(() => (canvas.value.width * 12) / (audio.semitonesCount * 7));
-piano.whiteHeight = computed(() => Math.min(canvas.value.height, piano.whiteWidth * 4));
-piano.heightOffset = computed(() => canvas.value.height - piano.whiteHeight);
-
-piano.blackWidth = computed(() => piano.whiteWidth / 1.5);
-piano.blackHeight = computed(() => piano.whiteHeight * 0.7);
-piano.blackOffset = computed(() => piano.whiteWidth / 2.5);
-piano.blackEnd = computed(() => piano.heightOffset + piano.blackHeight);
+const piano = {
+  whiteWidth: 0,
+  whiteHeight: 0,
+  heightOffset: 0,
+  blackWidth: 0,
+  blackHeight: 0,
+  blackOffset: 0,
+  blackEnd: 0,
+};
 
 function drawPiano() {
   enshureContext();
@@ -269,15 +514,29 @@ function drawPiano() {
   const bufferLength = source.analyser.frequencyBinCount;
   const dataArray = new Uint8Array(bufferLength);
 
+  const currentSemitone = new Semitone(canvasCtx, t);
+  currentSemitone.setFillStyle('black');
+
   const draw = () => {
-    visual.animationId = requestAnimationFrame(visual.next);
+    tick();
+    animationId = requestAnimationFrame(visual.next);
 
     source.analyser.getByteFrequencyData(dataArray);
 
-    source.pitch = acf2p();
+    const currentPitch = acf2p();
+    currentSemitone.setPitch(currentPitch);
 
-    visual.canvasCtx.fillStyle = 'rgb(100, 210, 240)';
-    visual.canvasCtx.fillRect(0, 0, canvas.value.width, canvas.value.height);
+    canvasCtx.fillStyle = 'rgb(100, 210, 240)';
+    canvasCtx.fillRect(0, 0, canvas.value.width, canvas.value.height);
+
+    piano.whiteWidth = (canvas.value.width * 12) / (audio.semitonesCount * 7);
+    piano.whiteHeight = Math.min(canvas.value.height, piano.whiteWidth * 4);
+    piano.heightOffset = canvas.value.height - piano.whiteHeight;
+
+    piano.blackWidth = piano.whiteWidth / 1.5;
+    piano.blackHeight = piano.whiteHeight * 0.7;
+    piano.blackOffset = piano.whiteWidth / 2.5;
+    piano.blackEnd = piano.heightOffset + piano.blackHeight;
 
     let sum = 0;
     let count = 0;
@@ -303,11 +562,11 @@ function drawPiano() {
       const v = sum / count;
 
       if (isSharp(note)) {
-        blackFill = note === source.note ? 'green' : `rgb(${v}, ${v}, ${v})`;
+        blackFill = note === currentSemitone.semitone ? 'green' : `rgb(${v}, ${v}, ${v})`;
         blackX = widthOffset - piano.blackOffset;
       } else {
-        visual.canvasCtx.fillStyle = note === source.note ? 'green' : `rgb(255, ${255 - v}, ${255 - v})`;
-        visual.canvasCtx.fillRect(
+        canvasCtx.fillStyle = note === currentSemitone.semitone ? 'green' : `rgb(255, ${255 - v}, ${255 - v})`;
+        canvasCtx.fillRect(
           widthOffset,
           piano.heightOffset,
           piano.whiteWidth - 2,
@@ -315,8 +574,8 @@ function drawPiano() {
         );
 
         if (blackX) {
-          visual.canvasCtx.fillStyle = blackFill;
-          visual.canvasCtx.fillRect(
+          canvasCtx.fillStyle = blackFill;
+          canvasCtx.fillRect(
             blackX,
             piano.heightOffset,
             piano.blackWidth,
@@ -331,6 +590,8 @@ function drawPiano() {
       sum = 0;
       count = 0;
     }
+
+    currentSemitone.render();
   };
 
   visual.next = draw;
@@ -384,68 +645,73 @@ function drawBass() {
   const semitonesCount = 20;
 
   const clef = '𝄢';
-  visual.canvasCtx.font = '10px serif';
-  const text = visual.canvasCtx.measureText(clef);
-  const clefK = text.actualBoundingBoxAscent === 8 ? 6 : 4.2;
+  canvasCtx.font = '10px serif';
+  const text = canvasCtx.measureText(clef);
+  const clefRatio = text.actualBoundingBoxAscent === 8 ? 6 : 4.2;
   const clefOffset = text.actualBoundingBoxAscent - 8;
 
+  const currentSemitone = new Semitone(canvasCtx, t);
+  currentSemitone.setFillStyle('black');
+
   const draw = () => {
-    visual.animationId = requestAnimationFrame(visual.next);
+    tick();
+    animationId = requestAnimationFrame(visual.next);
 
-    source.pitch = acf2p();
-
-    const semitone = semitoneFromPitch(source.pitch);
+    const pitch = acf2p();
+    currentSemitone.setPitch(pitch);
 
     const lineHeight = 3;
     const betweenHeight = canvas.value.height / 6;
     const step = betweenHeight / 2;
     const fontOffset = betweenHeight / 3;
 
-    visual.canvasCtx.fillStyle = 'white';
-    visual.canvasCtx.fillRect(0, 0, canvas.value.width, canvas.value.height);
+    canvasCtx.fillStyle = 'white';
+    canvasCtx.fillRect(0, 0, canvas.value.width, canvas.value.height);
 
     for (let offset = betweenHeight; offset < canvas.value.height; offset += betweenHeight) {
-      visual.canvasCtx.fillStyle = 'black';
-      visual.canvasCtx.fillRect(0, offset, canvas.value.width, lineHeight);
+      canvasCtx.fillStyle = 'black';
+      canvasCtx.fillRect(0, offset, canvas.value.width, lineHeight);
     }
 
-    const clefFont = Math.floor((betweenHeight - lineHeight) * clefK);
-    visual.canvasCtx.font = `${clefFont}px serif`;
-    visual.canvasCtx.fillText(
+    const clefFont = Math.floor((betweenHeight - lineHeight) * clefRatio);
+    canvasCtx.font = `${clefFont}px serif`;
+    canvasCtx.fillText(
       clef,
       lineHeight,
       (clefOffset * 6 + betweenHeight) * 2 + clefFont / 2 + fontOffset + lineHeight * 2,
     );
 
-    if (!Number.isFinite(semitone)) {
+    if (!Number.isFinite(currentSemitone.semitone)) {
       return;
     }
 
-    const n = maxTone - semitone;
+    const n = maxTone - currentSemitone.semitone;
     if (n < 0 || n > semitonesCount) {
       return;
     }
 
-    const sharp = isSharp(semitone);
+    const sharp = isSharp(currentSemitone.semitone);
     const font = betweenHeight - lineHeight;
     const noteFont = font * 4;
 
     const steps = bassSteps(n);
     const pitchOffset = steps * step + lineHeight + fontOffset;
     if (sharp) {
-      visual.canvasCtx.font = `${font}px serif`;
-      visual.canvasCtx.fillText(
+      canvasCtx.font = `${font}px serif`;
+      canvasCtx.fillText(
         '♯',
         canvas.value.width / 2,
         pitchOffset,
       );
     }
-    visual.canvasCtx.font = `${noteFont}px serif`;
-    visual.canvasCtx.fillText(
+    canvasCtx.font = `${noteFont}px serif`;
+    canvasCtx.fillText(
       '𝅝',
       canvas.value.width / 2 + font / 2,
       pitchOffset + clefOffset * 8,
     );
+
+    currentSemitone.render();
   };
 
   visual.next = draw;
@@ -465,9 +731,29 @@ function resume() {
 }
 
 function drawOff() {
-  visual.canvasCtx.clearRect(0, 0, canvas.value.width, canvas.value.height);
+  canvasCtx.clearRect(0, 0, canvas.value.width, canvas.value.height);
   stopDrawing();
   pause();
+}
+
+function createWaveOscillator(semitone) {
+  const len = 50;
+  const real = new Float32Array(len);
+  const imag = new Float32Array(len);
+  real[0] = 0;
+  imag[0] = 0;
+  for (let i = 1, v = 1; i < len; i += 1, v = 1 / (i * i)) {
+    real[i] = v;
+    imag[i] = v;
+  }
+  const wave = audio.context.createPeriodicWave(real, imag, { disableNormalization: true });
+
+  const oscillator = audio.context.createOscillator();
+  oscillator.setPeriodicWave(wave);
+  oscillator.frequency.setValueAtTime(frequencyFromSemitone(semitone), audio.context.currentTime);
+  oscillator.start();
+
+  return oscillator;
 }
 
 const drawers = {
@@ -479,20 +765,18 @@ const drawers = {
 };
 visual.drawer = computed(() => drawers[visual.drawerKey]);
 
+let getUserMedia = null;
+
 async function getDisplayStream() {
-  const stream = await navigator.mediaDevices
+  return navigator.mediaDevices
     .getDisplayMedia({
       audio: true,
       surfaceSwitching: 'include',
     });
-
-  return stream;
 }
 
 async function getMicrophoneStream() {
-  const stream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
-
-  return stream;
+  return getUserMedia({ video: false, audio: true });
 }
 
 const sources = {
@@ -521,38 +805,28 @@ async function startContext(stream) {
   // default: 0.8 min: 0 max: 1
   analyser.smoothingTimeConstant = 0.85;
   distortion.connect(analyser);
+  // source.source.connect(analyser);
   source.analyser = analyser;
 
   audio.tail = source.source;
+  // audio.tail = distortion;
 
-  const len = 50;
-  const real = new Float32Array(len);
-  const imag = new Float32Array(len);
-  real[0] = 0;
-  imag[0] = 0;
-  for (let i = 1, v = 1; i < len; i += 1, v = 1 / (i * i)) {
-    real[i] = v;
-    imag[i] = v;
-  }
-  const wave = audio.context.createPeriodicWave(real, imag, { disableNormalization: true });
+  pianoOscillator = createWaveOscillator(42);
 
-  oscillator = audio.context.createOscillator();
-  // oscillator.type = 'sine';
-  oscillator.setPeriodicWave(wave);
-  oscillator.frequency.setValueAtTime(frequencyFromSemitone(42), audio.context.currentTime);
-  oscillator.start();
-}
+  // let oscillator = createWaveOscillator(50);
+  // oscillator.connect(audio.context.destination);
+  // oscillator.connect(source.analyser);
+  // oscillators.push(oscillator);
 
-async function initCanvas() {
-  visual.canvasCtx = canvas.value.getContext('2d');
+  // oscillator = createWaveOscillator(53);
+  // oscillator.connect(audio.context.destination);
+  // oscillator.connect(source.analyser);
+  // oscillators.push(oscillator);
 
-  const intendedWidth = canvasWrap.value.clientWidth;
-  canvas.value.setAttribute('width', intendedWidth);
-
-  const intendedHeight = canvasWrap.value.clientHeight;
-  canvas.value.setAttribute('height', intendedHeight);
-
-  visual.canvasCtx.clearRect(0, 0, canvas.value.width, canvas.value.height);
+  // oscillator = createWaveOscillator(56);
+  // oscillator.connect(audio.context.destination);
+  // oscillator.connect(source.analyser);
+  // oscillators.push(oscillator);
 }
 
 async function start(sourceName) {
@@ -567,17 +841,80 @@ async function start(sourceName) {
 
   await startContext(stream);
 
-  if (visual.drawer && !visual.animationId) {
+  if (visual.drawer && !animationId) {
     visual.drawer();
+  }
+}
+const { errors } = inject('$errors');
+
+const media = reactive({
+  allowed: true,
+  secure: false,
+  legacy: false,
+  deviceChanged: false,
+  error: null,
+});
+
+async function debug() {
+  if (navigator?.mediaDevices?.getSupportedConstraints) {
+    const supportedConstraints = navigator.mediaDevices.getSupportedConstraints();
+    errors.value.push({
+      message: 'mediaDevices supportedConstraints',
+      context: { stack: JSON.stringify(supportedConstraints, null, 2) },
+    });
+  }
+  if (navigator?.mediaDevices?.enumerateDevices) {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    errors.value.push({
+      message: 'mediaDevices enumerateDevices',
+      context: { stack: JSON.stringify(devices, null, 2) },
+    });
   }
 }
 
 async function init() {
-  await initCanvas();
+  canvasCtx = initCanvas(canvas.value, canvasWrap.value);
 
-  start(Object.keys(sources)[0]);
+  if (!navigator.mediaDevices) {
+    getUserMedia = navigator.getUserMedia
+                         || navigator.webkitGetUserMedia
+                         || navigator.mozGetUserMedia;
+    if (!getUserMedia) {
+      media.allowed = false;
+    } else {
+      media.legacy = true;
+      getUserMedia = (constraints) => new Promise(
+        (resolve, reject) => {
+          getUserMedia.call(navigator, constraints, resolve, reject);
+        },
+      );
+    }
+  } else {
+    getUserMedia = (constraints) => navigator.mediaDevices.getUserMedia(constraints);
+    navigator.mediaDevices.ondevicechange = () => {
+      media.deviceChanged = true;
+    };
+  }
+  if (window.isSecureContext !== undefined) {
+    media.secure = window.isSecureContext;
+  }
 
-  visual.drawerKey = 'bass';
+  try {
+    await start(Object.keys(sources)[0]);
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error(e);
+    switch (e.name) {
+      case 'NotAllowedError':
+      case 'NotFoundError':
+        media.error = e.name;
+        break;
+      default:
+        throw e;
+    }
+  }
+
+  visual.drawerKey = 'bars';
 }
 
 function stop() {
@@ -599,11 +936,23 @@ onBeforeUnmount(() => {
   stop();
 });
 
+watch(focused, (v, old) => {
+  if (v === old) return;
+
+  if (v) {
+    resume();
+    resumeDrawing();
+  } else {
+    stopDrawing();
+    pause();
+  }
+});
+
 watch(() => visual.drawer, (value, old) => {
   if (value === old) return;
   if (!source.analyser) return;
 
-  if (visual.animationId) {
+  if (animationId) {
     visual.next = value;
   } else {
     value();
@@ -624,14 +973,15 @@ watch(() => source.echo, (value, old) => {
     audio.tail = source.source;
   }
 });
-
-useResizeObserver(canvasWrap, () => {
+function onCanvasResize() {
   const intendedWidth = canvasWrap.value.clientWidth;
   canvas.value.setAttribute('width', intendedWidth);
 
   const intendedHeight = canvasWrap.value.clientHeight;
   canvas.value.setAttribute('height', intendedHeight);
-});
+}
+useResizeObserver(canvasWrap, onCanvasResize);
+watch(isFullscreen, onCanvasResize);
 
 function onMousemove(event) {
   const x = event.offsetX;
@@ -645,26 +995,30 @@ function onMousemove(event) {
       s -= 1;
     }
   }
-  oscillator.frequency.setValueAtTime(frequencyFromSemitone(s), audio.context.currentTime);
+  pianoOscillator.frequency.setValueAtTime(frequencyFromSemitone(s), audio.context.currentTime);
 }
 
 function onMousedown(event) {
+  if (!audio.context) return;
+
   onMousemove(event);
 
-  if (!oscillatorConnected) {
-    oscillatorConnected = true;
-    oscillator.connect(audio.context.destination);
-    oscillator.connect(source.analyser);
+  if (!pianoOscillatorConnected) {
+    pianoOscillatorConnected = true;
+    pianoOscillator.connect(audio.context.destination);
+    pianoOscillator.connect(source.analyser);
   }
 
   canvas.value.addEventListener('mousemove', onMousemove);
 }
 
 function onMouseup() {
-  if (oscillatorConnected) {
-    oscillatorConnected = false;
-    oscillator.disconnect(audio.context.destination);
-    oscillator.disconnect(source.analyser);
+  if (!audio.context) return;
+
+  if (pianoOscillatorConnected) {
+    pianoOscillatorConnected = false;
+    pianoOscillator.disconnect(audio.context.destination);
+    pianoOscillator.disconnect(source.analyser);
   }
 
   canvas.value.removeEventListener('mousemove', onMousemove);
@@ -684,26 +1038,30 @@ function onTouchmove(event) {
       s -= 1;
     }
   }
-  oscillator.frequency.setValueAtTime(frequencyFromSemitone(s), audio.context.currentTime);
+  pianoOscillator.frequency.setValueAtTime(frequencyFromSemitone(s), audio.context.currentTime);
 }
 
 function onTouchstart(event) {
+  if (!audio.context) return;
+
   onTouchmove(event);
 
-  if (!oscillatorConnected) {
-    oscillatorConnected = true;
-    oscillator.connect(audio.context.destination);
-    oscillator.connect(source.analyser);
+  if (!pianoOscillatorConnected) {
+    pianoOscillatorConnected = true;
+    pianoOscillator.connect(audio.context.destination);
+    pianoOscillator.connect(source.analyser);
   }
 
   canvas.value.addEventListener('touchmove', onTouchmove);
 }
 
 function onTouchend() {
-  if (oscillatorConnected) {
-    oscillatorConnected = false;
-    oscillator.disconnect(audio.context.destination);
-    oscillator.disconnect(source.analyser);
+  if (!audio.context) return;
+
+  if (pianoOscillatorConnected) {
+    pianoOscillatorConnected = false;
+    pianoOscillator.disconnect(audio.context.destination);
+    pianoOscillator.disconnect(source.analyser);
   }
 
   canvas.value.removeEventListener('touchmove', onTouchmove);
@@ -711,30 +1069,59 @@ function onTouchend() {
 </script>
 
 <template>
-  <header class="controls ma">
-    <strong>Audio Visializer</strong>
-    <button type="button" @click="start('display')">
-      Start display
-    </button>
-    <button type="button" :disabled="source.type === 'microphone' && visual.animationId" @click="start('microphone')">
-      Start microphone
-    </button>
-    <button type="button" :disabled="!source.stream && !visual.animationId" @click="stop">
-      Stop
-    </button>
-    <button type="button" :class="{ active: source.echo }" @click="source.echo = !source.echo">
-      Echo
-    </button>
+  <header class="controls header">
+    <span class="ma">
+      🎵<strong>Audio Visializer</strong>
+      <button type="button" @click="start('display')">
+        🗔
+        {{ t('buttons.start-display') }}
+      </button>
+      <button type="button" :disabled="source.type === 'microphone' && animationId" @click="start('microphone')">
+        🎤
+        {{ t('buttons.start-microphone') }}
+        ({{ microphones.length }})
+      </button>
+      <button type="button" :disabled="!source.stream && !animationId" @click="stop">
+        {{ t('buttons.stop') }}
+      </button>
+      <button type="button" :class="{ active: source.echo }" @click="source.echo = !source.echo">
+        {{ t('buttons.echo') }}
+      </button>
+      <button type="button" @click="debug">
+        {{ t('buttons.debug') }}
+      </button>
+    </span>
+    <span class="ma">
+      <span>{{ renders++ }}</span>
+      <span>{{ fps }} fps</span>
+      <span v-if="usedMemory">
+        {{ usedMemory }}
+      </span>
+      <template v-if="battery.isSupported">
+        <span>
+          <b v-if="battery.charging">🔌</b>
+          <b v-else>🔋</b>
+          {{ batteryPercent }}% {{ batteryTime }}
+        </span>
+      </template>
+      <label>
+        <select v-model="$i18n.locale">
+          <option v-for="lang in $i18n.availableLocales" :key="lang" :value="lang">
+            {{ lang }}
+          </option>
+        </select>
+      </label>
+    </span>
   </header>
   <div class="controls ma">
     <span class="ma">
-      Source (stream)
+      {{ t('source') }} (stream)
       <span
         v-if="source.stream"
         class="status"
         :class="source.stream.active ? 'status_active' : 'status_inactive'"
       >
-        {{ source.stream.active ? 'Active' : 'Inactive' }}
+        {{ source.stream.active ? t('stream.active') : t('stream.inactive') }}
       </span>
     </span>
     <span
@@ -747,12 +1134,31 @@ function onTouchend() {
       <button
         type="button"
         @click="track.enabled = !track.enabled"
-      >{{ track.enabled ? 'Mute' : 'Muted' }}</button>
+      >{{ track.enabled ? t('track.buttons.mute') : t('track.buttons.unmute') }}</button>
     </span>
+    <div v-if="!media.allowed" class="container">
+      <span class="warning">
+        {{ t('not-secure') }}
+      </span>
+    </div>
+    <div v-if="!media.allowed && !media.isSecure" class="container">
+      <span class="warning">
+        {{ t('insecure-context') }}
+      </span>
+    </div>
+    <div v-if="media.error" class="container">
+      <span class="warning">
+        {{ t(media.error) }}
+      </span>
+    </div>
   </div>
   <div class="controls ma">
     <span v-if="source.analyser" class="ma">
-      <span><b title="Fast Fourier Transform">FFT size</b>: {{ source.analyser.fftSize }}</span>
+      <span><b
+        :title="t('fast-fourier-transform')"
+      >{{
+        t('analyser.fast-fourier-transform-size')
+      }}</b>: {{ source.analyser.fftSize }}</span>
       <button
         v-for="size in fftSizes"
         :key="size"
@@ -770,29 +1176,30 @@ function onTouchend() {
           {{ audio.context.state }}
         </span>
         <button v-if="audio.context.state === 'running'" type="button" @click="pause">
-          Pause
+          {{ t('audio-context.buttons.pause') }}
         </button>
         <button v-else type="button" @click="resume">
-          Resume
+          {{ t('audio-context.buttons.resume') }}
         </button>
       </template>
-      <span>Max: {{ audio.maxFreq }}Hz</span>
+      <span>Max: {{ audio.maxFreq }}{{ t('hertz') }}</span>
     </span>
     <span v-if="visual.drawerKey === 'piano'">
+      🎹
       <button type="button" class="minus" @click="audio.semitoneFrom -= 1">-</button>
-      <RomanNote :note="audio.semitoneFrom" />
+      <RomanNote v-if="visual.needsRoman" :note="audio.semitoneFrom" />
       <button type="button" class="plus" @click="audio.semitoneFrom += 1">+</button>
       —
       <button type="button" class="minus" @click="audio.semitoneTo -= 1">-</button>
-      <RomanNote :note="audio.semitoneTo" />
+      <RomanNote v-if="visual.needsRoman" :note="audio.semitoneTo" />
       <button type="button" class="plus" @click="audio.semitoneTo += 1">+</button>
-      ({{ audio.semitonesCount }} semitones)
+      ({{ audio.semitonesCount }} {{ t('count-of-semitones') }})
       (<button type="button" class="note-button" @click="audio.semitoneFrom = 0">
-        <RomanNote :note="0" />
+        <RomanNote v-if="visual.needsRoman" :note="0" />
       </button>
       —
       <button type="button" class="note-button" @click="audio.semitoneTo = audio.maxSemitone">
-        <RomanNote :note="audio.maxSemitone" />
+        <RomanNote v-if="visual.needsRoman" :note="audio.maxSemitone" />
       </button>)
     </span>
   </div>
@@ -806,28 +1213,27 @@ function onTouchend() {
           :disabled="key === visual.drawerKey"
           @click="visual.drawerKey = key"
         >
-          {{ drawersNamesRu[key] }}
+          {{ t(`drawers.${key}`) }}
         </button>
       </span>
-      <span>
-        <span class="pitch">
-          <span>{{ source.octaveName || '-' }}</span>
-          <RomanNote :note="source.note" />
-          <span>{{ (source.enNoteName || '-') + String(source.octave + 1) }}</span>
-          <span>{{ source.detune }}</span>
-          <span>({{ source.semitonesDetune }})</span>
-          <span>{{ Math.round((source.pitch + Number.EPSILON) * 10) / 10 }}Hz</span>
-        </span>
-      </span>
+      <button type="button" @click="toggle">
+        &#x26F6;
+      </button>
     </div>
     <div ref="canvasWrap" class="canvas-wrap">
       <canvas
         ref="canvas"
         @mousedown="onMousedown"
         @mouseup="onMouseup"
-        @touchstart="onTouchstart"
-        @touchend="onTouchend"
+        @touchstart.passive="onTouchstart"
+        @touchend.passive="onTouchend"
       />
+    </div>
+    <div ref="canvasWrapOriginal" class="canvas-wrap">
+      <canvas ref="canvasOriginal" />
+    </div>
+    <div ref="canvasWrapAcf2p" class="canvas-wrap">
+      <canvas ref="canvasAcf2p" />
     </div>
   </main>
 </template>
@@ -845,9 +1251,8 @@ function onTouchend() {
   }
 }
 .controls {
-  padding: 0.5rem;
+  padding: 0.75rem;
   border-bottom: 1px dashed gray;
-  margin-bottom: 1rem;
 }
 .canvas-wrap {
   border: 1px solid gray;
@@ -861,9 +1266,15 @@ function onTouchend() {
 }
 .pitch {
   display: inline-flex;
-  min-width: 20rem;
   min-height: 2rem;
   justify-content: space-around;
+  align-items: center;
+}
+.note, .cents, .hz {
+  min-width: 3rem;
+}
+.octave {
+  min-width: 9rem;
 }
 button.active {
   background-color: lightgray;
@@ -884,4 +1295,126 @@ button.active {
   background-color: black;
   color: white;
 }
+.warning {
+  border: solid 1px yellow;
+  border-radius: 1rem;
+  background-color: lightyellow;
+  padding: 0.25rem;
+}
+main {
+  padding-bottom: 3rem;
+}
+.container {
+    display: flex;
+    margin: 0.25rem;
+}
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+}
 </style>
+
+<i18n lang="json">
+{
+    "en": {
+      "not-secure": "No access to media devices. Ensure connection is HTTPS and browser has support for media devices",
+      "insecure-context": "Insecure context",
+      "NotAllowedError": "Allow access to media devices to record",
+      "NotFoundError": "Requested device not found",
+      "buttons": {
+        "start-display": "Display",
+        "start-microphone": "Mic",
+        "stop": "Stop",
+        "echo": "Echo",
+        "debug": "Debug"
+      },
+      "stream": {
+        "active": "Active",
+        "inactive": "Inactive"
+      },
+      "track": {
+        "buttons": {
+          "mute": "Mute",
+          "unmute": "Unmute"
+        }
+      },
+      "analyser": {
+        "fast-fourier-transform-size": "FFT Size"
+      },
+      "fast-fourier-transform": "Fast Fourier transform",
+      "audio-context": {
+        "buttons": {
+          "pause": "Pause",
+          "resume": "Resume"
+        }
+      },
+      "hertz": "Hz",
+      "count-of-semitones": "semitones",
+      "source": "Source",
+      "drawers": {
+        "bass": "𝄢𝄚",
+        "piano": "🎹Piano",
+        "bars": "Bars",
+        "sin": "Sin",
+        "off": "Off"
+      },
+      "octaves": [
+        "Dbl Contra", "Sub Contra", "Contra",
+        "Great", "Small",
+        "1 Line", "2 Line", "3 Line", "4 Line", "5 Line",
+        "6 Line", "7 Line"
+      ]
+    },
+    "ru": {
+      "not-secure": "Нет доступа к медиа-устройствам. Убедитесь, что соединение защищено и браузер поддерживает медиа-устройства",
+      "insecure-context": "Соединение незащищено",
+      "NotAllowedError": "Для записи разрешите доступ к устройствам",
+      "NotFoundError": "Запрашиваемое устройство не найдено",
+      "buttons": {
+        "start-display": "Экран",
+        "start-microphone": "Микрофон",
+        "stop": "Стоп",
+        "echo": "Эхо",
+        "debug": "Отладка"
+      },
+      "stream": {
+        "active": "Активен",
+        "inactive": "Неактивен"
+      },
+      "track": {
+        "buttons": {
+          "mute": "Приглушить",
+          "unmute": "Вкл"
+        }
+      },
+      "analyser": {
+        "fast-fourier-transform-size": "Размер БПФ (FFT)"
+      },
+      "fast-fourier-transform": "Быстрые преобразования Фурье",
+      "audio-context": {
+        "buttons": {
+          "pause": "Пауза",
+          "resume": "Продолжить"
+        }
+      },
+      "hertz": "Гц",
+      "count-of-semitones": "полутонов",
+      "source": "Источник",
+      "drawers": {
+        "bass": "𝄢𝄚",
+        "piano": "🎹Пианино",
+        "bars": "Столбики",
+        "sin": "Синус",
+        "off": "Выкл"
+      },
+      "octaves": [
+        "Субсубконтроктава", "Субконтроктава", "Контроктава",
+        "Большая октава", "Малая октава",
+        "Первая октава", "Вторая октава", "Третья октава", "Четвёртая октава", "Пятая октава",
+        "Шестая октава", "Седьмая октава"
+      ]
+    }
+}
+</i18n>

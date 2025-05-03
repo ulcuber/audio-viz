@@ -1,7 +1,9 @@
 import { fileURLToPath, URL } from 'node:url';
+import { resolve, dirname } from 'node:path';
 
 import { defineConfig } from 'vite';
 import vue from '@vitejs/plugin-vue';
+import VueI18nPlugin from '@intlify/unplugin-vue-i18n/vite';
 // import basicSsl from '@vitejs/plugin-basic-ssl';
 import VueDevTools from 'vite-plugin-vue-devtools';
 
@@ -12,6 +14,13 @@ export default defineConfig({
   base: `${ASSET_URL}/audio-viz`,
   plugins: [
     vue(),
+    VueI18nPlugin({
+      // locale messages resource pre-compile option
+      include: resolve(
+        dirname(fileURLToPath(import.meta.url)),
+        './lang/**',
+      ),
+    }),
     VueDevTools(),
     // basicSsl({
     //   /** name of certification */

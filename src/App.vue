@@ -14,10 +14,12 @@ const { errors, clear } = inject('$errors');
       </button>
       <ul>
         <li v-for="error in errors" :key="error">
-          <b>{{ error.message }}</b>
-          <div>{{ error.context.from }}</div>
-          <div><i>{{ error.context.file }}</i></div>
-          <div><pre>{{ error.context.stack }}</pre></div>
+          <b>{{ error?.message || error }}</b>
+          <template v-if="error.context">
+            <div>{{ error.context.from }}</div>
+            <div><i>{{ error.context.file }}</i></div>
+            <div><pre>{{ error.context.stack }}</pre></div>
+          </template>
         </li>
       </ul>
     </div>

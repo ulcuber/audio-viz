@@ -1,11 +1,20 @@
 /* eslint-disable no-param-reassign */
 
-import './assets/main.css';
+import './assets/sass/main.scss';
 
 import { createApp, ref } from 'vue';
+import { createI18n } from 'vue-i18n';
 import App from './App.vue';
 
+const i18n = createI18n({
+  legacy: false,
+  locale: (navigator?.language || navigator?.userLanguage)?.split('-')[0] || 'en',
+  fallbackLocale: 'en',
+  messages: { en: {}, ru: {} },
+});
+
 createApp(App)
+  .use(i18n)
   .use({
     install(app) {
       const errors = ref([]);

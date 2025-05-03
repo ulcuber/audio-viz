@@ -1,14 +1,16 @@
+const MIDI_OFFSET = 69;
+
 export function lcFirst(val) {
   return String(val).charAt(0).toLowerCase() + String(val).slice(1);
 }
 
 export function semitoneFromPitch(frequency) {
   const noteNum = 12 * (Math.log(frequency / 440) / Math.log(2));
-  return Math.round(noteNum) + 69;
+  return Math.round(noteNum) + MIDI_OFFSET;
 }
 
 export function frequencyFromSemitone(note) {
-  return 440 * 2 ** ((note - 69) / 12);
+  return 440 * 2 ** ((note - MIDI_OFFSET) / 12);
 }
 
 const OCTAVE_CENTS = 1200;

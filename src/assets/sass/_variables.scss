@@ -1,0 +1,35 @@
+$hover-color: #cfcfcf;
+$focus-color: #0071de;
+$active-color: #1f4c76;
+
+$border-color: #a1a3a7;
+$active-border-color: #888;
+
+$success-light-color: #d0dbc2;
+$success-color: #86a361;
+$success-text-color: #6c844d;
+$danger-light-color: #f0cbc9;
+$danger-color: #a7342d;
+$danger-text-color: #7f2722;
+
+$form-color: #41403e;
+$form-border-color: #41403e;
+$form-background-color: #fff;
+
+$link-color: #060;
+
+$container-max-widths: (
+  sm: 540px,
+  md: 720px,
+  lg: 960px,
+  xl: 1140px
+);
+$grid-columns: 12;
+$grid-gutter-width: 30px;
+$grid-breakpoints: (
+  xs: 0,
+  sm: 576px,
+  md: 768px,
+  lg: 992px,
+  xl: 1200px
+);
