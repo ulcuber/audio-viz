@@ -7,8 +7,8 @@ import VueI18nPlugin from '@intlify/unplugin-vue-i18n/vite';
 // import basicSsl from '@vitejs/plugin-basic-ssl';
 import VueDevTools from 'vite-plugin-vue-devtools';
 
-const ASSET_URL = process.env.ASSET_URL || '';
-const baseUrl = `${ASSET_URL}/audio-viz`;
+const VITE_ASSET_URL = process.env.VITE_ASSET_URL || '';
+const baseUrl = `${VITE_ASSET_URL}/audio-viz/`;
 
 // https://vitejs.dev/config/
 export default defineConfig({
